@@ -2,7 +2,7 @@ package worker
 
 import "github.com/chenxull/goGridhub/gridhub/src/jobservice/job"
 
-//Interface for worker
+// Interface for worker,提供给Core 的接口
 // like a driver to transparent the lower queue
 type Interface interface {
 	// start to serve
