@@ -8,10 +8,12 @@ import (
 	"github.com/chenxull/goGridhub/gridhub/src/jobservice/lcm"
 	"github.com/chenxull/goGridhub/gridhub/src/jobservice/logger"
 	"github.com/chenxull/goGridhub/gridhub/src/jobservice/period"
+	"github.com/chenxull/goGridhub/gridhub/src/jobservice/runner"
 	"github.com/chenxull/goGridhub/gridhub/src/jobservice/worker"
 	"github.com/gocraft/work"
 	"github.com/gomodule/redigo/redis"
 	"github.com/pkg/errors"
+	"reflect"
 	"sync"
 	"time"
 )
@@ -140,42 +142,184 @@ func (w *basicWorker) RegisterJobs(jobs map[string]interface{}) error {
 	}
 
 	for name, j := range jobs {
-		if err := w(name, j); err != nil {
+		if err := w.registerJob(name, j); err != nil {
 			return err
 		}
 	}
+	return nil
 }
 
 func (w *basicWorker) Enqueue(jobName string, params job.Parameters, isUnique bool, webHook string) (*job.Stats, error) {
-	panic("implement me")
+	var (
+		j   *work.Job
+		err error
+	)
+
+	// 检查job是否唯一
+	if isUnique {
+		if j, err = w.enqueuer.EnqueueUnique(jobName, params); err != nil {
+			return nil, err
+		}
+	} else {
+		// Enqueue job
+		if j, err = w.enqueuer.Enqueue(jobName, params); err != nil {
+			return nil, err
+		}
+	}
+	// avoid backend worker bug
+	if j == nil {
+		return nil, fmt.Errorf("job '%s' can not be enqueued, please check the job metatdata", jobName)
+	}
+
+	return generateResult(j, job.KindGeneric, isUnique, params, webHook), nil
 }
 
 func (w *basicWorker) Schedule(jobName string, params job.Parameters, runAfterSeconds uint64, isUnique bool, webHook string) (*job.Stats, error) {
-	panic("implement me")
+	var (
+		j   *work.ScheduledJob
+		err error
+	)
+	if isUnique {
+		if j, err = w.enqueuer.EnqueueUniqueIn(jobName, int64(runAfterSeconds), params); err != nil {
+			return nil, err
+		}
+	} else {
+		if j, err = w.enqueuer.EnqueueIn(jobName, int64(runAfterSeconds), params); err != nil {
+			return nil, err
+		}
+	}
+	// avoid backend worker bug
+	if j == nil {
+		return nil, fmt.Errorf("job '%s' can not be enqueued, please check the job metatdata", jobName)
+	}
+	res := generateResult(j.Job, job.KindScheduled, isUnique, params, webHook)
+	res.Info.RunAt = j.RunAt
+	res.Info.Status = job.ScheduledStatus.String()
+
+	return res, nil
 }
 
+// 自己实现了周期性任务队列，调度逻辑都自己实现
 func (w *basicWorker) PeriodicallyEnqueue(jobName string, params job.Parameters, cronSetting string, isUnique bool, webHook string) (*job.Stats, error) {
-	panic("implement me")
+
+	p := &period.Policy{
+		ID:            utils.MakeIdentifier(),
+		JobName:       jobName,
+		CronSpec:      cronSetting,
+		JobParameters: params,
+		WebHookURL:    webHook,
+	}
+
+	id, err := w.scheduler.Schedule(p)
+	if err != nil {
+		return nil, err
+	}
+	res := &job.Stats{
+		Info: &job.StatsInfo{
+			JobID:       p.ID,
+			JobName:     jobName,
+			Status:      job.ScheduledStatus.String(),
+			JobKind:     job.KindPeriodic,
+			CronSpec:    cronSetting,
+			WebHookURL:  webHook,
+			NumericPID:  id,
+			EnqueueTime: time.Now().Unix(),
+			UpdateTime:  time.Now().Unix(),
+			RefLink:     fmt.Sprintf("/api/v1/jobs/%s", p.ID),
+			Parameters:  params,
+		},
+	}
+
+	return res, nil
 }
 
+// Info of worker
 func (w *basicWorker) Stats() (*worker.Stats, error) {
-	panic("implement me")
+	//Get the status of worker pool via client
+	hbs, err := w.client.WorkerPoolHeartbeats()
+	if err != nil {
+		return nil, err
+	}
+
+	// Find the heartbeat of this worker via pid
+	stats := make([]*worker.StatsData, 0)
+	for _, hb := range hbs {
+		if hb.HeartbeatAt == 0 {
+			continue // invalid ones
+		}
+
+		wPoolStatus := workerPoolStatusHealthy
+		if time.Unix(hb.HeartbeatAt, 0).Add(workerPoolDeadTime).Before(time.Now()) {
+			wPoolStatus = workerPoolStatusDead
+		}
+		stat := &worker.StatsData{
+			WorkerPoolID: hb.WorkerPoolID,
+			StartedAt:    hb.StartedAt,
+			HeartbeatAt:  hb.HeartbeatAt,
+			JobNames:     hb.JobNames,
+			Concurrency:  hb.Concurrency,
+			Status:       wPoolStatus,
+		}
+		stats = append(stats, stat)
+	}
+
+	if len(stats) == 0 {
+		return nil, errors.New("failed to get stats of worker pools")
+	}
+
+	return &worker.Stats{
+		Pools: stats,
+	}, nil
 }
 
 func (w *basicWorker) IsKnownJob(name string) (interface{}, bool) {
-	panic("implement me")
+	return w.knownJobs.Load(name)
 }
 
 func (w *basicWorker) ValidateJobParameters(jobType interface{}, params job.Parameters) error {
-	panic("implement me")
+	if jobType == nil {
+		return errors.New("nil job type")
+	}
+
+	theJ := runner.Wrap(jobType)
+	return theJ.Validate(params)
 }
 
+//Stop will stop the job
 func (w *basicWorker) StopJob(jobID string) error {
-	panic("implement me")
+	if utils.IsEmptyStr(jobID) {
+		return errors.New("empty job ID to stop")
+	}
+
+	//获取job的信息
+	t, err := w.ctl.Track(jobID)
+	if err != nil {
+		return err
+	}
+	if job.RunningStatus.Compare(job.Status(t.Job().Info.Status)) < 0 {
+		return errors.Errorf("mismatch job status for stopping job: %s, job status %s is behind %s", jobID, t.Job().Info.Status, job.RunningStatus)
+	}
+
+	switch t.Job().Info.JobKind {
+	case job.KindGeneric:
+		return t.Stop()
+	case job.KindScheduled:
+		// delete the scheduled job in the queue if it not running yet
+		if err := w.client.DeleteScheduledJob(t.Job().Info.RunAt, jobID); err != nil {
+			// Job is already running?
+			logger.Errorf("scheduled job %s (run at = %d) is not found in the queue to stop, is it already running?", jobID, t.Job().Info.RunAt)
+		}
+		return t.Stop()
+	case job.KindPeriodic:
+		return w.scheduler.UnSchedule(jobID)
+	default:
+		return errors.Errorf("job kind %s is not supported", t.Job().Info.JobKind)
+
+	}
 }
 
 func (w *basicWorker) RetryJob(jobID string) error {
-	panic("implement me")
+	return errors.New("not implemented")
 }
 
 func (w *basicWorker) ping() error {
@@ -198,5 +342,76 @@ func (w *basicWorker) ping() error {
 // RegisterJob is used to register the job to the worker.
 // j is the type of the job
 func (w *basicWorker) registerJob(name string, j interface{}) (err error) {
+	if utils.IsEmptyStr(name) || j == nil {
+		return errors.New("job can not be registered with empty name or nil interface")
+	}
 
+	//j must be job.Interface
+	if _, ok := j.(job.Interface); !ok {
+		return errors.Errorf("job must implement the job.Interface :%s", reflect.TypeOf(j).String())
+	}
+
+	//1:1 constraint
+	if jInList, ok := w.knownJobs.Load(name); ok {
+		return fmt.Errorf("job name %s has been already registered with %s", name, reflect.TypeOf(jInList).String())
+	}
+
+	//Same job implementation can be only registered with on name
+	w.knownJobs.Range(func(jName interface{}, jInList interface{}) bool {
+		jobImpl := reflect.TypeOf(j).String()
+		if reflect.TypeOf(jInList).String() == jobImpl {
+			err = errors.Errorf("job %s has been already registered with name %s", jobImpl, jName)
+			return false
+		}
+		return true
+	})
+	// Something happened in the range
+	if err != nil {
+		return
+	}
+
+	//Wrap job
+	redisJob := runner.NewRedisJob(j, w.context, w.ctl)
+	//Get more info from j
+	theJ := runner.Wrap(j)
+
+	//put into the pool 将包装好的job放入池子中。等到有对应的任务需要被执行的时候，会触发对应的Redis任务，从中获取任务执行的基本信息
+	w.pool.JobWithOptions(
+		name,
+		work.JobOptions{
+			MaxFails: theJ.MaxFalis(),
+			SkipDead: true,
+		},
+		func(job *work.Job) error {
+			return redisJob.Run(job)
+		},
+	)
+	// Keep the name of registered jobs as known jobs for future validation
+	w.knownJobs.Store(name, j)
+	logger.Infof("Register job %s with name %s", reflect.TypeOf(j).String(), name)
+
+	return nil
+}
+
+func generateResult(
+	j *work.Job,
+	jobKind string,
+	isUnique bool,
+	jobParameters job.Parameters,
+	webHook string,
+) *job.Stats {
+	return &job.Stats{
+		Info: &job.StatsInfo{
+			JobID:       j.ID,
+			JobName:     j.Name,
+			JobKind:     jobKind,
+			IsUnique:    isUnique,
+			Status:      job.PendingStatus.String(),
+			EnqueueTime: j.EnqueuedAt,
+			UpdateTime:  time.Now().Unix(),
+			RefLink:     fmt.Sprintf("/api/v1/jobs/%s", j.ID),
+			Parameters:  jobParameters,
+			WebHookURL:  webHook,
+		},
+	}
 }

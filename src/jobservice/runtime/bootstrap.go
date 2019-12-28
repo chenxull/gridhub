@@ -105,8 +105,24 @@ func (bs *Bootstrap) LoadAndRun(ctx context.Context, cancel context.CancelFunc) 
 			return errors.Errorf("load and run worker error: %s", err)
 
 		}
+
+		//Run daemon process of life cycle controller
+		if err = lcmCtl.Serve(); err != nil {
+			return errors.Errorf("start life cycle controller error: %s", err)
+		}
+
+		// Start agent
+		// Non blocking call
+		hookAgent.Attach(lcmCtl)
+		if err = hookAgent.Serve(); err != nil {
+			return errors.Errorf("start hook agent error: %s", err)
+		}
+	} else {
+		return errors.Errorf("worker backend '%s' is not supported", cfg.PoolConfig.Backend)
 	}
 
+	// Initialize controller
+	ctl := core.NewController(backendWorker, manager)
 }
 
 // Load and run the worker worker

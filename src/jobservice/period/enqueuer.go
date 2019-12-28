@@ -5,6 +5,16 @@ import (
 	"github.com/chenxull/goGridhub/gridhub/src/jobservice/common/utils"
 	"github.com/chenxull/goGridhub/gridhub/src/jobservice/lcm"
 	"github.com/gomodule/redigo/redis"
+	"time"
+)
+
+const (
+	enqueuerSleep   = 2 * time.Minute
+	enqueuerHorizon = 4 * time.Minute
+	neverExecuted   = 365 * 24 * time.Hour
+
+	// PeriodicExecutionMark marks the scheduled job to a periodic execution
+	PeriodicExecutionMark = "_job_kind_periodic_"
 )
 
 type enqueuer struct {
