@@ -3,17 +3,23 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"github.com/chenxull/goGridhub/gridhub/src/jobservice/api"
 	"github.com/chenxull/goGridhub/gridhub/src/jobservice/common/utils"
 	"github.com/chenxull/goGridhub/gridhub/src/jobservice/config"
+	"github.com/chenxull/goGridhub/gridhub/src/jobservice/core"
 	"github.com/chenxull/goGridhub/gridhub/src/jobservice/env"
 	"github.com/chenxull/goGridhub/gridhub/src/jobservice/hook"
 	"github.com/chenxull/goGridhub/gridhub/src/jobservice/job"
 	"github.com/chenxull/goGridhub/gridhub/src/jobservice/lcm"
+	"github.com/chenxull/goGridhub/gridhub/src/jobservice/logger"
 	"github.com/chenxull/goGridhub/gridhub/src/jobservice/mgt"
 	"github.com/chenxull/goGridhub/gridhub/src/jobservice/worker"
 	"github.com/gomodule/redigo/redis"
 	"github.com/pkg/errors"
+	"os"
+	"os/signal"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -123,6 +129,62 @@ func (bs *Bootstrap) LoadAndRun(ctx context.Context, cancel context.CancelFunc) 
 
 	// Initialize controller
 	ctl := core.NewController(backendWorker, manager)
+	apiServer := bs.createAPIServer(ctx, cfg, ctl)
+
+	//Listen to the system signals
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, os.Interrupt, syscall.SIGTERM, os.Kill)
+	terminated := false
+	go func(errChan chan error) {
+		defer func() {
+			//GraceFully shutdown
+			if er := apiServer.Stop(); er != nil {
+				logger.Error(er)
+			}
+			// Notify others who're listening to the system context
+			cancel()
+		}()
+
+		select {
+		case <-sig:
+			terminated = true
+		case err = <-errChan:
+			return
+		}
+	}(rootContext.ErrorChan)
+	node := ctx.Value(utils.NodeID)
+	logger.Infof("API server is serving at %d with [%s] mode at node [%s]", cfg.Port, cfg.Protocol, node)
+	if er := apiServer.Start(); er != nil {
+		if !terminated {
+			// Tell the listening goroutine
+			rootContext.ErrorChan <- er
+		}
+	} else {
+		// In case
+		sig <- os.Interrupt
+	}
+
+	// Wait everyone exit
+	rootContext.WG.Wait()
+
+	return
+}
+
+//Load and run the API server
+func (bs *Bootstrap) createAPIServer(ctx context.Context, cfg *config.Configuration, ctl core.Interface) *api.Server {
+
+	authProvider := &api.SecretAuthenticator{}
+	handler := api.NewDefaultHandler(ctl)
+	router := api.NewBaseRouter(handler, authProvider)
+	serverConfig := api.ServerConfig{
+		Protocol: cfg.Protocol,
+		Port:     cfg.Port,
+	}
+	if cfg.HTTPSConfig != nil {
+		serverConfig.Cert = cfg.HTTPSConfig.Cert
+		serverConfig.Key = cfg.HTTPSConfig.Key
+	}
+	return api.NewServer(ctx, router, serverConfig)
 }
 
 // Load and run the worker worker

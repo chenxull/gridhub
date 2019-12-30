@@ -22,9 +22,9 @@ type basicController struct {
 }
 
 //NewController is constructor of basic
-func NewController(backendWroker worker.Interface, mgr mgt.Manager) Interface {
+func NewController(backendWorker worker.Interface, mgr mgt.Manager) Interface {
 	return &basicController{
-		backendWorker: backendWroker,
+		backendWorker: backendWorker,
 		manager:       mgr,
 	}
 }
