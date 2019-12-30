@@ -4,6 +4,7 @@ import (
 	"context"
 	"github.com/chenxull/goGridhub/gridhub/src/jobservice/common/utils"
 	"github.com/chenxull/goGridhub/gridhub/src/jobservice/lcm"
+	"github.com/chenxull/goGridhub/gridhub/src/jobservice/logger"
 	"github.com/gomodule/redigo/redis"
 	"time"
 )
@@ -47,4 +48,23 @@ func newEnqueuer(ctx context.Context, namespace string, pool *redis.Pool, ctl lc
 		stopChan:    make(chan bool, 1),
 		nodeID:      nodeID.(string),
 	}
+}
+
+//Blocking call
+func (e *enqueuer) start() error {
+	//Load policyStore when starting
+	if err := e.policyStore.load(); err != nil {
+		return err
+	}
+
+	go e.loop()
+	logger.Info("Periodic enqueuer is started")
+
+	return e.policyStore.serve()
+}
+
+func (e *enqueuer) loop() {
+	defer func() {
+		logger.Info("Periodic enqueuer is stopped")
+	}()
 }
