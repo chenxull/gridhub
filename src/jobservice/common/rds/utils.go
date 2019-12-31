@@ -1,6 +1,7 @@
 package rds
 
 import (
+	"fmt"
 	"github.com/chenxull/goGridhub/gridhub/src/jobservice/common/utils"
 	"github.com/gomodule/redigo/redis"
 	"github.com/pkg/errors"
@@ -91,4 +92,62 @@ func ZPopMin(conn redis.Conn, key string) (interface{}, error) {
 	}
 
 	return nil, errors.New("zpopmin error: bad result reply")
+}
+
+// GetZsetByScore get the items from the zset filtered by the specified score scope.
+func GetZsetByScore(conn redis.Conn, key string, scores []int64) ([]JobScore, error) {
+	if conn == nil {
+		return nil, errors.New("nil redis conn when getting zset by score")
+	}
+
+	if utils.IsEmptyStr(key) {
+		return nil, errors.New("missing key when getting zset by score")
+	}
+
+	if len(scores) < 2 {
+		return nil, errors.New("bad arguments: not enough scope scores provided")
+	}
+
+	values, err := redis.Values(conn.Do("ZRANGEBYSCORE", key, scores[0], scores[1], "WITHSCORES"))
+	if err != nil {
+		return nil, err
+	}
+
+	var jobsWithScores []JobScore
+
+	if err := redis.ScanSlice(values, &jobsWithScores); err != nil {
+		return nil, err
+	}
+
+	return jobsWithScores, nil
+}
+
+// AcquireLock acquires a redis lock with specified expired time
+func AcquireLock(conn redis.Conn, lockerKey string, lockerID string, expireTime int64) error {
+	args := []interface{}{lockerKey, lockerID, "NX", "EX", expireTime}
+	res, err := conn.Do("SET", args...)
+	if err != nil {
+		return err
+	}
+	// Existing, the value can not be override
+	if res == nil {
+		return fmt.Errorf("key %s is already set with value %v", lockerKey, lockerID)
+	}
+
+	return nil
+}
+
+// ReleaseLock releases the acquired lock
+func ReleaseLock(conn redis.Conn, lockerKey string, lockerID string) error {
+	theID, err := redis.String(conn.Do("GET", lockerKey))
+	if err != nil {
+		return err
+	}
+
+	if theID == lockerID {
+		_, err := conn.Do("DEL", lockerKey)
+		return err
+	}
+
+	return errors.New("locker ID mismatch")
 }
