@@ -3,6 +3,7 @@ module github.com/chenxull/goGridhub/gridhub/src
 go 1.13
 
 require (
+	github.com/casbin/casbin v1.9.1
 	github.com/gocraft/work v0.5.1
 	github.com/golang-migrate/migrate v3.5.4+incompatible
 	github.com/gomodule/redigo v2.0.0+incompatible

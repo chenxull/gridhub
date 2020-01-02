@@ -7,6 +7,7 @@ import (
 	"github.com/chenxull/goGridhub/gridhub/src/common/config/models"
 	"github.com/chenxull/goGridhub/gridhub/src/common/config/store"
 	"github.com/chenxull/goGridhub/gridhub/src/common/config/store/driver"
+	"github.com/chenxull/goGridhub/gridhub/src/common/http/modifier/auth"
 	"github.com/chenxull/goGridhub/gridhub/src/common/utils"
 	"log"
 	"os"

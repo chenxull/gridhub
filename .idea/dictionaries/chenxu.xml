@@ -2,6 +2,7 @@
   <dictionary name="chenxu">
     <words>
       <w>enqueuer</w>
+      <w>subresource</w>
       <w>zpopmin</w>
       <w>zrange</w>
       <w>zremrangebyrank</w>
