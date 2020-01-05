@@ -6,7 +6,8 @@ import (
 )
 
 const (
-	RegistryTypeHarbor RegistryType = "harbor"
+	RegistryTypeHarbor         RegistryType = "harbor"
+	RegistryTypeDockerRegistry RegistryType = "docker-registry"
 )
 
 // RegistryType indicates the type of registry

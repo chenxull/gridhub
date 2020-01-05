@@ -1,6 +1,9 @@
 package adapter
 
 import (
+	"errors"
+	"fmt"
+	"github.com/chenxull/goGridhub/gridhub/src/replication/filter"
 	"github.com/chenxull/goGridhub/gridhub/src/replication/model"
 	"github.com/docker/distribution"
 	"io"
@@ -11,6 +14,9 @@ const (
 	UserAgentReplication = "harbor-replication-service"
 	MaxConcurrency       = 100
 )
+
+var registry = map[model.RegistryType]Factory{}
+var adapterInfoMap = map[model.RegistryType]*model.AdapterPattern{}
 
 type Factory interface {
 	Create(*model.Registry) (Adapter, error)
@@ -65,4 +71,84 @@ func (r *Repository) GetName() string {
 // GetResourceType returns the resource type
 func (r *Repository) GetResourceType() string {
 	return r.ResourceType
+}
+
+// GetLabels returns the labels
+func (r *Repository) GetLabels() []string {
+	return nil
+}
+
+// VTag defines an vTag object, it can be image tag, chart version and etc.
+type VTag struct {
+	ResourceType string   `json:"resource_type"`
+	Name         string   `json:"name"`
+	Labels       []string `json:"labels"`
+}
+
+// GetFilterableType returns the filterable type
+func (v *VTag) GetFilterableType() filter.FilterableType {
+	return filter.FilterableTypeVTag
+}
+
+// GetResourceType returns the resource type
+func (v *VTag) GetResourceType() string {
+	return v.ResourceType
+}
+
+// GetName returns the name
+func (v *VTag) GetName() string {
+	return v.Name
+}
+
+// GetLabels returns the labels
+func (v *VTag) GetLabels() []string {
+	return v.Labels
+}
+
+// RegisterFactory registers one adapter factory to the registry
+func RegisterFactory(t model.RegistryType, factory Factory) error {
+	if len(t) == 0 {
+		return errors.New("invalid registry type")
+	}
+	if factory == nil {
+		return errors.New("empty adapter factory")
+	}
+	if _, exit := registry[t]; exit {
+		return fmt.Errorf("adapter factory for %s already exits", t)
+	}
+	registry[t] = factory
+	adapterInfo := factory.AdapterPattern()
+	if adapterInfo != nil {
+		adapterInfoMap[t] = adapterInfo
+	}
+	return nil
+}
+
+// GetFactory gets the adapter factory by the specified name
+func GetFactory(t model.RegistryType) (Factory, error) {
+	factory, exist := registry[t]
+	if !exist {
+		return nil, fmt.Errorf("adapter factory for %s not found", t)
+	}
+	return factory, nil
+}
+
+// HasFactory checks whether there is given type adapter factory
+func HasFactory(t model.RegistryType) bool {
+	_, ok := registry[t]
+	return ok
+}
+
+// ListRegisteredAdapterTypes lists the registered Adapter type
+func ListRegisteredAdapterTypes() []model.RegistryType {
+	types := []model.RegistryType{}
+	for t := range registry {
+		types = append(types, t)
+	}
+	return types
+}
+
+// ListAdapterInfos list the adapter infos
+func ListAdapterInfos() map[model.RegistryType]*model.AdapterPattern {
+	return adapterInfoMap
 }
